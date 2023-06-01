@@ -7,25 +7,26 @@
 
   vars:
     temp_dir: "{{ mdd_data_parent }}/temp_dir"
-
-  vars_prompt:
-
-    - name: file_level_input
-      prompt: What file level would you like to elevate at?
-      private: false
-
-    - name: is_test_run_input
-      prompt: Would you like to see the results before committing? (yes/no)?
-      private: false
+    file_level: "{{ level | default(-1) }}"
+    is_test_run: "{{ test | default(false) }}"
 
   tasks:
 
-    - name: Convert is_test_run to boolean
-      set_fact:
-        is_test_run: "{{ is_test_run_input | bool }}"
-    - name: Convert file_level to boolean
-      set_fact:
-        file_level: "{{ file_level_input | int }}"
+    # - pause:
+    #     prompt: "Would you like to see the results before committing? (yes/no)"
+    #     echo: yes
+    #   register: is_test_run_input
+    #   until: is_test_run_input.user_input.lower() in ['yes', 'no', 'y', 'n']
+    #   retries: 5
+    #   delay: 1
+    # - set_fact:
+    #     is_test_run: false
+    #   when: is_test_run_input.user_input.lower() in ['no', 'n']
+    # - set_fact:
+    #     is_test_run: true
+    #   when: is_test_run_input.user_input.lower() in ['yes', 'y']
+    - debug:
+        var: file_level
 
     - name: elevate
       elevate_configs: # you will never know how this actually works lol ;)
@@ -43,12 +44,16 @@
         prompt: "Is this result okay? (yes/no)"
         echo: yes
       register: result
+      until: result.user_input.lower() in ['yes', 'no', 'y', 'n']
+      retries: 5
+      delay: 1
       when: is_test_run == true
+
     - set_fact:
         is_ok_continue: false
     - set_fact:
-        is_ok_continue: "{{ result.user_input | bool }}"
-      when: is_test_run == true
+        is_ok_continue: true
+      when: is_test_run == true and result.user_input.lower() in ['yes', 'y']
 
     - name: Delete temp directory if present
       file:

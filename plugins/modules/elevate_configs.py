@@ -69,7 +69,7 @@ debug = []              # global variable for debugging
 FILES_CREATED = False   # global variable for determining if anything was actually elevated
 
 class Elevate:
-    def __init__(self, mdd_data_dir, mdd_data_patterns, file_level, is_test_run, temp_dir):
+    def __init__(self, mdd_data_dir, mdd_data_patterns, temp_dir, file_level : int = None, is_test_run : bool = False):
         self.mdd_data_dir = mdd_data_dir
         self.mdd_data_patterns = mdd_data_patterns
         self.file_level = file_level # we need to add one so that level 1 in playbook will correspond with with keys under mdd_data
@@ -78,6 +78,7 @@ class Elevate:
         self.file_pattern = ''
         self.device_tag = ''
         self.separator = '__*__'
+        self.file_parts = ''
         self.at_bottom_dir = False
 
         self.elevate()
@@ -235,6 +236,21 @@ class Elevate:
             self.mdd_data_dir = self.temp_dir
 
 
+    def find_file_level(self, config, files, level=0):
+        if not isinstance(config, dict):
+            return -1
+
+        for key in config:
+            if key.split(':')[-1] in files:
+                return level
+
+        for value in config.values():
+            result = self.find_file_level(value, files, level + 1)
+            if result != -1:
+                return result
+
+        return -1
+
     def elevate_level(self, rel_path : str) -> None:
         """Finds common configs in a directory's child directories and elevates them to the current directory"""
 
@@ -256,12 +272,10 @@ class Elevate:
         path = os.path.join(self.mdd_data_dir, rel_path)
 
         # iterate through each child dir
+        files = []
         for file in os.scandir(path):
             if not file.is_dir(): # only want directories #TODO: need to check if dir in network?
                 continue
-
-            # if not fnmatch(file.name, "*-" + self.device_tag + "*"): # For switches
-            #     continue
 
             # get all yml config files and put into one dictionary
             config = {}
@@ -278,6 +292,12 @@ class Elevate:
                     config.update(data)
                     config = self.unflatten_dict(config)
 
+
+                    file_name = child_file.name
+                    for part in self.file_parts:
+                        file_name = file_name.replace(part, '')
+                    files.append(file_name)
+
                     changed_files[child_file.path] = { 'data': data, 'filename': child_file.name }
 
             if bool(config):
@@ -285,6 +305,12 @@ class Elevate:
 
             if not contains_yml_files:
                 ignored_msgs.append(f"   Ignoring {file.name} Reason: Does not contain any files matching the patterns: {self.mdd_data_patterns}") # if directory contains no oc files
+
+        # auto get the file level if not defined (either by the user or already found)
+        if self.file_level == -1 and bool(configs):
+            self.file_level = self.find_file_level(configs[0], files)
+            if self.file_level == -1: # if not found, auto to top level
+                self.file_level = 0
 
         # get common configs
         result = self.find_common_configs(configs)
@@ -376,12 +402,12 @@ class Elevate:
                 data = self.create_nested_dict(keys_hierarchy_dict, key_dict['value'])
 
                 filename = "-".join(key.rsplit(':', 1)[-1] for key in keys_hierarchy)
+                if self.file_level == 0 and 'config' in self.file_pattern:
+                    filename = 'remaining'
 
-                file_parts = self.file_pattern.split('*')
-                file_path = f"{path}/{file_parts[0]}{filename}{file_parts[1]}"
+                file_path = f"{path}/{self.file_parts[0]}{filename}{self.file_parts[1]}"
 
                 debug.append(f"creating file {filename}")
-                #self.files_created.append(file_path)
                 with open(file_path, 'w') as file:
                     file.write("---\n")
                     yaml.safe_dump(data, file, sort_keys=False)
@@ -440,11 +466,13 @@ class Elevate:
         yaml_network_data = self.generate_directory_structure(self.mdd_data_dir)
 
         for file_pattern in self.mdd_data_patterns:
+            #self.file_level = None
+            if ('config' in file_pattern):
+                self.file_level = -1
             self.file_pattern = file_pattern
+            self.file_parts = self.file_pattern.split('*')
 
-            for tag in ["sw"]:
-                self.device_tag = tag
-                self.iterate_directory(yaml_network_data)
+            self.iterate_directory(yaml_network_data)
 
         if not FILES_CREATED:
             debug.append("Configs already elevated to highest level")
@@ -455,18 +483,18 @@ def main():
     arguments = dict(
         mdd_data_dir=dict(required=True, type='str'),
         mdd_data_patterns=dict(required=True, type='list'),
-        file_level=dict(required=True, type='int'),
+        file_level=dict(required=True, type='int', default = None),
         is_test_run=dict(required=True, type='bool'),
         temp_dir=dict(required=True, type='str')
     )
 
     module = AnsibleModule(argument_spec=arguments, supports_check_mode=False)
 
-    if module.params['file_level'] < 0:
-        module.fail_json(msg="File level needs to be 0 and above")
+    # if module.params['file_level'] is not None and module.params['file_level'] < 0:
+    #     module.fail_json(msg="File level needs to be 0 and above")
 
-    Elevate( module.params['mdd_data_dir'], module.params['mdd_data_patterns'], module.params['file_level'], module.params['is_test_run'], module.params['temp_dir'])
-    module.exit_json(changed=True, failed=False, debug=debug)#, files_created=files_created)
+    Elevate( module.params['mdd_data_dir'], module.params['mdd_data_patterns'], module.params['temp_dir'], module.params['file_level'], module.params['is_test_run'])
+    module.exit_json(changed=True, failed=False, debug=debug)
 
 
 if __name__ == '__main__':
